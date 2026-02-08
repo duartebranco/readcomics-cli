@@ -180,14 +180,24 @@ class ComicScraper:
                 if max_num is None or opt_max > max_num:
                     max_num = opt_max
 
-            return str(max_num) if max_num is not None else "1"
+            return max_num if max_num is not None else 1
         except Exception:
-            return "1"
+            return 1
         finally:
             try:
                 page.close()
             except Exception:
                 pass
+
+    def get_pages_links(self, issue_url):
+        num_pages = self.get_num_pages(issue_url)
+        links_of_pages = []
+
+        for page_num in range(1, num_pages + 1):
+            url = f"{issue_url}#{page_num}"
+            links_of_pages.append(url)
+
+        return links_of_pages
 
     def get_issue_images(self, issue_url):
         """
