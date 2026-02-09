@@ -61,10 +61,14 @@ class ComicScraper:
 
             items = page.eval_on_selector_all(
                 "a[href*='/Comic/']",
-                """els => els.map(e => ({
-                    href: (new URL(e.getAttribute('href') || e.href, document.baseURI)).pathname,
-                    text: (e.textContent || '').trim()
-                }))""",
+                """els => els.map(e => {
+                    const img = e.querySelector('img');
+                    return {
+                        href: (new URL(e.getAttribute('href') || e.href, document.baseURI)).pathname,
+                        text: (e.textContent || '').trim(),
+                        thumb: img ? img.src : ''
+                    };
+                })""",
             )
 
             results = []
@@ -91,9 +95,103 @@ class ComicScraper:
                     title = slug.replace("-", " ").replace("_", " ")
                     title = " ".join(title.split())
 
-                results.append({"title": title, "url": link})
+                thumb = item.get("thumb", "")
+                if thumb and not thumb.startswith("http"):
+                    thumb = urljoin(self.base_url, thumb)
+
+                results.append({"title": title, "url": link, "thumbnail": thumb})
 
             return results
+        finally:
+            page.close()
+
+    # ---------- Comic info ----------
+
+    def get_comic_info(self, comic_url):
+        """
+        Fetch metadata for a comic: cover image URL, summary, genres, status, etc.
+
+        Returns a dict with keys: cover, summary, genres, status, year.
+        All values are strings (empty string if not found).
+        """
+        page = self._new_page()
+        try:
+            page.goto(comic_url, timeout=60000)
+            try:
+                page.wait_for_load_state("networkidle", timeout=7000)
+            except Exception:
+                pass
+
+            info = page.evaluate("""() => {
+                const result = {cover: '', summary: '', genres: '', status: '', year: '', publisher: ''};
+
+                // Cover image (the /Uploads/ image that isn't tiny)
+                const imgs = document.querySelectorAll('img');
+                for (const img of imgs) {
+                    if (img.src && img.src.includes('/Uploads/') && img.naturalWidth > 50) {
+                        result.cover = img.src;
+                        break;
+                    }
+                }
+
+                // The info section lives inside the first .barContent and uses
+                // <p> blocks with <span class="info"> as labels:
+                //   <p><span class="info">Genres:</span>&nbsp;<a>Action</a>...</p>
+                //   <p><span class="info">Publisher:</span>&nbsp;DC Comics</p>
+                //   <p><span class="info">Status:</span>&nbsp;Completed</p>
+                // Genres are wrapped in <a> tags, other values are plain text.
+                const bc = document.querySelector('.barContent');
+                if (bc) {
+                    const paragraphs = bc.querySelectorAll('p');
+                    for (const p of paragraphs) {
+                        const label = p.querySelector('span.info');
+                        if (!label) continue;
+                        const key = (label.textContent || '').trim().toLowerCase().replace(':', '');
+
+                        if (key === 'genres' || key === 'genre') {
+                            // Genres are in <a> tags after the label
+                            const links = p.querySelectorAll('a');
+                            const genres = [];
+                            for (const a of links) {
+                                const t = (a.textContent || '').trim();
+                                if (t && t !== '.') genres.push(t);
+                            }
+                            result.genres = genres.join(', ');
+                        } else {
+                            // For other fields, grab all text after the label span
+                            let val = p.textContent || '';
+                            val = val.replace(label.textContent || '', '').trim();
+                            // Clean up separating commas from info spans
+                            val = val.replace(/^[:\\s]+/, '').trim();
+
+                            // Status field has trailing junk (views, bookmarks, etc.)
+                            // Only keep text up to the first newline.
+                            val = val.split('\\n')[0].replace(/\\u00a0/g, ' ').trim();
+
+                            if (key === 'status')           result.status = val;
+                            if (key === 'year of release')  result.year = val;
+                            if (key === 'publisher')        result.publisher = val;
+                        }
+                    }
+
+                    // Summary: the <p> that contains substantial text and has no
+                    // span.info label inside it (skip the info rows).
+                    for (const p of paragraphs) {
+                        if (p.querySelector('span.info')) continue;
+                        const text = (p.textContent || '').trim();
+                        if (text.length > 40) {
+                            result.summary = text;
+                            break;
+                        }
+                    }
+                }
+
+                return result;
+            }""")
+
+            return info if isinstance(info, dict) else {
+                "cover": "", "summary": "", "genres": "", "status": "", "year": "", "publisher": ""
+            }
         finally:
             page.close()
 

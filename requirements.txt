@@ -1,2 +1,4 @@
 httpx
 playwright
+rich
+Pillow
