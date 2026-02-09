@@ -27,6 +27,9 @@ class ComicScraper:
             self.browser = self.playwright.chromium.launch(headless=True)
         return self.browser
 
+    # ------------------------------
+
+    # returns results -> [({tittle, comic_url}), ...]
     def search(self, query):
         url = f"{self.base_url}/Search/Comic?keyword={quote_plus(query)}"
         browser = self._init_playwright()
@@ -81,6 +84,7 @@ class ComicScraper:
             except Exception:
                 pass
 
+    # returns issues -> [({tittle, issue_url}), ...]
     def get_issues(self, comic_url):
         browser = self._init_playwright()
         page = browser.new_page()
@@ -189,6 +193,7 @@ class ComicScraper:
             except Exception:
                 pass
 
+    # return links_of_pages -> [url_page1, url_page2, ...]
     def get_pages_links(self, issue_url):
         num_pages = self.get_num_pages(issue_url)
         links_of_pages = []
@@ -199,37 +204,55 @@ class ComicScraper:
 
         return links_of_pages
 
-    def get_issue_images(self, issue_url):
-        """
-        Uses Playwright because images are injected dynamically.
-        """
+    def get_page_image(self, page_url):
         browser = self._init_playwright()
         page = browser.new_page()
-        page.goto(issue_url, timeout=60000)
+        page.goto(page_url, timeout=60000)
 
-        page.wait_for_selector("img")
+        page.wait_for_selector("div#divImage img", state="attached", timeout=15000)
         images = page.eval_on_selector_all(
-            "img",
-            "els => els.map(e => e.src).filter(src => src.includes('jpg') || src.includes('png'))"
+            "div#divImage img",
+            "els => els.map(e => e.src)"
         )
 
+        # Return only the second image (index 1) if present, otherwise None
+        second = None
+        if isinstance(images, list) and len(images) >= 2:
+            second = images[1]
         page.close()
-        return images
+        return second
 
     # ---------- Download ----------
 
     def download_issue(self, issue, base_dir="downloads"):
-        issue_dir = os.path.join(
-            base_dir,
-            issue["title"].replace("/", "_")
-        )
+        # Extract comic title from URL
+        issue_url = issue["url"]
+        parsed = urlparse(issue_url)
+        path_parts = parsed.path.rstrip("/").split("/")
+
+        # Extract comic title (e.g., "The-Savage-Hulk" from "/Comic/The-Savage-Hulk/Full")
+        comic_title = path_parts[2] if len(path_parts) > 2 else "Unknown"
+        comic_title = comic_title.replace("-", " ").replace("_", " ")
+        comic_title = " ".join(comic_title.split())
+
+        issue_title = issue["title"].replace("/", "_")
+
+        # Create structured directory: downloads/COMIC_TITLE/ISSUE_TITLE/
+        issue_dir = os.path.join(base_dir, comic_title, issue_title)
         os.makedirs(issue_dir, exist_ok=True)
 
-        images = self.get_issue_images(issue["url"])
+        # Get all page links
+        pages_links = self.get_pages_links(issue_url)
 
-        for i, img_url in enumerate(images, start=1):
+        # Download image for each page
+        for page_num, page_link in enumerate(pages_links, start=1):
+            img_url = self.get_page_image(page_link)
+
+            if not img_url:
+                continue
+
             ext = os.path.splitext(img_url)[1].split("?")[0]
-            filename = f"{i:03d}{ext}"
+            filename = f"{page_num:03d}{ext}"
             path = os.path.join(issue_dir, filename)
 
             if os.path.exists(path):
