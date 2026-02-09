@@ -359,7 +359,7 @@ class ComicScraper:
         Download all pages of a single issue.
 
         Images are downloaded concurrently using a thread pool for maximum
-        throughput — the HTTP client and OS I/O are the bottleneck, not CPU,
+        throughput - the HTTP client and OS I/O are the bottleneck, not CPU,
         so threads are the right tool here.
 
         Args:

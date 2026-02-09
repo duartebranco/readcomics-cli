@@ -37,7 +37,7 @@ def _cleanup():
 
 def _signal_handler(signum, frame):
     """Handle termination signals gracefully."""
-    console.print("\n\n  [yellow]Interrupted — cleaning up...[/yellow]")
+    console.print("\n\n  [yellow]Interrupted - cleaning up...[/yellow]")
     _cleanup()
     sys.exit(130)
 
@@ -353,7 +353,7 @@ def main():
     global _scraper_instance
 
     parser = argparse.ArgumentParser(
-        description="readcomics-cli — search and download comics from your terminal",
+        description="readcomics-cli - search and download comics from your terminal",
     )
     parser.add_argument(
         "-s", "--search",

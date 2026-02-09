@@ -1,6 +1,6 @@
 # readcomics-cli
 
-Search, browse, and download comics from [readcomiconline.li](https://readcomiconline.li) — straight from your terminal.
+Search, browse, and download comics from [readcomiconline.li](https://readcomiconline.li) straight from your terminal.
 
 Features inline cover art previews, concurrent downloads, and an interactive TUI powered by [Rich](https://github.com/Textualize/rich).
 
@@ -28,10 +28,10 @@ python main.py
 
 This launches an interactive session:
 
-1. **Search** — type a comic name
-2. **Pick a comic** — see a cover art preview, genres, and summary
-3. **Pick issues** — select one, a range, or all
-4. **Download** — pages are fetched and downloaded concurrently
+1. **Search** - type a comic name
+2. **Pick a comic** - see a cover art preview, genres, and summary
+3. **Pick issues** - select one, a range, or all
+4. **Download** - pages are fetched and downloaded concurrently (defaults to `/downloads`)
 
 ### CLI Flags
 
@@ -41,55 +41,16 @@ This launches an interactive session:
 | `-o`, `--output-dir PATH` | Set the download directory (default: `./downloads`) |
 | `--no-headless` | Show the browser window (useful for debugging) |
 
-### Examples
-
-```sh
-# Interactive mode
-python main.py
-
-# Search directly
-python main.py --search "batman"
-
-# Download to a custom folder
-python main.py -o ~/Comics
-
-# Combine flags
-python main.py -s "spider-man" -o ~/Comics
-```
-
-### Issue Selection
-
-When choosing which issues to download, you can use:
-
-| Input | Effect |
-|---|---|
-| `a` | Download all issues |
-| `3` | Download issue #3 |
-| `1-5` | Download issues 1 through 5 |
-| `1,3,7` | Download issues 1, 3, and 7 |
-| `1-3,7,10-12` | Mix ranges and individual picks |
-| `q` | Go back |
-
 ## Dependencies
 
-- [Playwright](https://playwright.dev/python/) — headless browser for scraping pages behind Cloudflare
-- [httpx](https://www.python-httpx.org/) — HTTP client for concurrent image downloads
-- [Rich](https://github.com/Textualize/rich) — tables, progress bars, styled output
-- [Pillow](https://python-pillow.org/) — inline cover art rendering in the terminal
+- [Playwright](https://playwright.dev/python/) - headless browser for scraping pages behind Cloudflare
+- [httpx](https://www.python-httpx.org/) - HTTP client for concurrent image downloads
+- [Rich](https://github.com/Textualize/rich) - tables, progress bars, styled output
+- [Pillow](https://python-pillow.org/) - inline cover art rendering in the terminal
 
-## Project Structure
+## Demo
 
-```
-readcomics-cli/
-├── main.py              # CLI entry point (interactive TUI)
-├── src/
-│   ├── __init__.py
-│   ├── scraper.py       # ComicScraper — search, issues, image extraction, downloads
-│   └── terminal_image.py # Inline image rendering via ANSI half-block characters
-├── downloads/           # Default download directory
-├── requirements.txt
-└── README.md
-```
+![Demo](docs/demo.mp4)
 
 ## License
 
