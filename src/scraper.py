@@ -1,93 +1,112 @@
 import os
-import re
-import requests
-import cloudscraper
-from bs4 import BeautifulSoup
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urljoin, quote_plus, urlparse
-from playwright.sync_api import sync_playwright
+
+import httpx
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
 
 class ComicScraper:
-    def __init__(self, base_url="https://readcomiconline.li"):
+    """Scrapes readcomiconline.li for comic search, issue listing, and page downloading."""
+
+    def __init__(self, base_url="https://readcomiconline.li", headless=True):
         self.base_url = base_url
-        self.scraper = cloudscraper.create_scraper()
-        self.browser = None
-        self.playwright = None
+        self._headless = headless
+        self._playwright = None
+        self._browser = None
+        self._http = httpx.Client(timeout=30, follow_redirects=True)
 
-    # ---------- Core helpers ----------
+    # ---------- Context manager ----------
 
-    def _get_soup(self, url):
-        r = self.scraper.get(url, timeout=30)
-        r.raise_for_status()
-        return BeautifulSoup(r.text, "html.parser")
+    def __enter__(self):
+        return self
 
-    def _init_playwright(self):
-        if self.browser is None:
-            self.playwright = sync_playwright().start()
-            self.browser = self.playwright.chromium.launch(headless=True)
-        return self.browser
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
 
-    # ------------------------------
+    # ---------- Lazy browser ----------
 
-    # returns results -> [({tittle, comic_url}), ...]
+    @property
+    def browser(self):
+        if self._browser is None:
+            self._playwright = sync_playwright().start()
+            self._browser = self._playwright.chromium.launch(headless=self._headless)
+        return self._browser
+
+    def _new_page(self):
+        """Create a new browser page from the shared browser instance."""
+        return self.browser.new_page()
+
+    # ---------- Search ----------
+
     def search(self, query):
+        """
+        Search for comics by keyword.
+
+        Returns a list of dicts: [{"title": str, "url": str}, ...]
+        """
         url = f"{self.base_url}/Search/Comic?keyword={quote_plus(query)}"
-        browser = self._init_playwright()
-        page = browser.new_page()
+        page = self._new_page()
         try:
             page.goto(url, timeout=60000)
-            # Wait for network to settle but don't fail if it doesn't fully idle.
             try:
                 page.wait_for_load_state("networkidle", timeout=7000)
             except Exception:
                 pass
-            # Ensure at least one comic link appears
-            page.wait_for_selector("a[href*='/Comic/']", timeout=10000)
+
+            try:
+                page.wait_for_selector("a[href*='/Comic/']", timeout=10000)
+            except PlaywrightTimeout:
+                return []
 
             items = page.eval_on_selector_all(
                 "a[href*='/Comic/']",
-                "els => els.map(e => ({href: (new URL(e.getAttribute('href')||e.href, document.baseURI)).pathname, raw: (new URL(e.getAttribute('href')||e.href, document.baseURI)).href, text: (e.textContent||'').trim()}))"
+                """els => els.map(e => ({
+                    href: (new URL(e.getAttribute('href') || e.href, document.baseURI)).pathname,
+                    text: (e.textContent || '').trim()
+                }))""",
             )
 
             results = []
             seen = set()
-            for it in items:
-                href = (it.get("href") if isinstance(it, dict) else None) or ""
+            for item in items:
+                href = item.get("href", "")
                 if not href:
                     continue
 
                 raw_path = href.split("?")[0]
-                # Only accept top-level /Comic/<slug> links (avoid issue or nested links)
                 parts = raw_path.strip("/").split("/")
+                # Only accept top-level /Comic/<slug> links (not issue links)
                 if len(parts) != 2 or parts[0].lower() != "comic":
                     continue
 
                 link = urljoin(self.base_url, raw_path)
-                title = (it.get("text") if isinstance(it, dict) else None) or ""
-                # Normalize whitespace
-                title = " ".join(title.split())
-                if not title:
-                    # fallback to slug
-                    seg = urlparse(link).path.rstrip("/").split("/")[-1]
-                    title = seg.replace("-", " ").replace("_", " ")
-                    title = " ".join(title.split())
-
                 if link in seen:
                     continue
                 seen.add(link)
+
+                title = " ".join(item.get("text", "").split())
+                if not title:
+                    slug = urlparse(link).path.rstrip("/").split("/")[-1]
+                    title = slug.replace("-", " ").replace("_", " ")
+                    title = " ".join(title.split())
+
                 results.append({"title": title, "url": link})
 
             return results
         finally:
-            try:
-                page.close()
-            except Exception:
-                pass
+            page.close()
 
-    # returns issues -> [({tittle, issue_url}), ...]
+    # ---------- Issues ----------
+
     def get_issues(self, comic_url):
-        browser = self._init_playwright()
-        page = browser.new_page()
+        """
+        Get the list of issues for a comic.
+
+        Returns a list of dicts: [{"title": str, "url": str}, ...]
+        Issues are returned in the order they appear on the page.
+        """
+        page = self._new_page()
         try:
             page.goto(comic_url, timeout=60000)
             try:
@@ -98,7 +117,10 @@ class ComicScraper:
 
             items = page.eval_on_selector_all(
                 "a[href]",
-                "els => els.map(e => ({href: (new URL(e.getAttribute('href')||e.href, document.baseURI)).pathname, raw: (new URL(e.getAttribute('href')||e.href, document.baseURI)).href, text: (e.textContent||'').trim()}))"
+                """els => els.map(e => ({
+                    href: (new URL(e.getAttribute('href') || e.href, document.baseURI)).pathname,
+                    text: (e.textContent || '').trim()
+                }))""",
             )
 
             parsed_comic = urlparse(comic_url)
@@ -108,168 +130,213 @@ class ComicScraper:
                 try:
                     comic_slug = comic_path.split("/Comic/")[1]
                 except Exception:
-                    comic_slug = None
+                    pass
 
             issues = []
             seen = set()
-            for it in items:
-                href = (it.get("href") if isinstance(it, dict) else None) or ""
+            for item in items:
+                href = item.get("href", "")
                 if not href:
                     continue
-                raw = href.split("?")[0]
-                link = urljoin(self.base_url, raw)
 
-                parsed = urlparse(link)
-                path = parsed.path.rstrip("/")
+                raw_path = href.split("?")[0]
+                link = urljoin(self.base_url, raw_path)
+                path = urlparse(link).path.rstrip("/")
 
-                # include explicit Issue- links or links under the same comic slug
-                if "/Issue-" not in path and not (comic_slug and path.startswith(f"/Comic/{comic_slug}/")):
+                # Only accept issue-level links under this comic
+                is_issue_link = "/Issue-" in path
+                is_under_comic = comic_slug and path.startswith(f"/Comic/{comic_slug}/") and path != comic_path
+                if not (is_issue_link or is_under_comic):
                     continue
 
                 if link in seen:
                     continue
+                seen.add(link)
 
-                title = (it.get("text") if isinstance(it, dict) else None) or ""
-                title = " ".join(title.split())
+                title = " ".join(item.get("text", "").split())
                 if not title:
-                    seg = path.split("/")[-1]
-                    title = seg.replace("-", " ").replace("_", " ") or link
+                    slug = path.split("/")[-1]
+                    title = slug.replace("-", " ").replace("_", " ")
                     title = " ".join(title.split())
 
-                seen.add(link)
                 issues.append({"title": title, "url": link})
 
             return issues
         finally:
-            try:
-                page.close()
-            except Exception:
-                pass
+            page.close()
 
-    # ---------- Issue scraping ----------
+    # ---------- Page images (readType=1 all-pages approach) ----------
 
-    def get_num_pages(self, issue_url):
-        browser = self._init_playwright()
-        page = browser.new_page()
+    def get_issue_image_urls(self, issue_url):
+        """
+        Navigate to the issue in all-pages mode (readType=1), scroll through
+        every image to trigger lazy-loading, then collect all real image URLs
+        in a single pass.
+
+        Returns a list of image URL strings, one per comic page.
+        """
+        # Append readType=1 to load all pages on a single page
+        separator = "&" if "?" in issue_url else "?"
+        all_pages_url = f"{issue_url}{separator}readType=1"
+
+        page = self._new_page()
         try:
-            page.goto(issue_url, timeout=60000)
-            page.wait_for_selector("select#selectPage", timeout=10000)
-
-            # fetch both value and text for each option
-            opts = page.eval_on_selector_all(
-                "select#selectPage option",
-                "els => els.map(e => ({v: (e.value||'').trim(), t: (e.textContent||'').trim()}))"
-            )
-
-            max_num = None
-            for opt in opts:
-                # opt is expected to be a dict like {'v': '...', 't': '...'}
-                t_raw = opt.get("t") if isinstance(opt, dict) else ""
-                v_raw = opt.get("v") if isinstance(opt, dict) else ""
-
-                # Prefer numbers from the visible text (human-facing). If none, use the value.
-                nums_text = re.findall(r"(\d+)", t_raw) if t_raw else []
-                nums_value = re.findall(r"(\d+)", v_raw) if v_raw else []
-                nums = nums_text if nums_text else nums_value
-
-                if not nums:
-                    continue
-
-                try:
-                    candidates = [int(n) for n in nums]
-                except ValueError:
-                    continue
-
-                opt_max = max(candidates)
-                if max_num is None or opt_max > max_num:
-                    max_num = opt_max
-
-            return max_num if max_num is not None else 1
-        except Exception:
-            return 1
-        finally:
+            page.goto(all_pages_url, timeout=60000)
             try:
-                page.close()
+                page.wait_for_load_state("networkidle", timeout=15000)
             except Exception:
                 pass
 
-    # return links_of_pages -> [url_page1, url_page2, ...]
-    def get_pages_links(self, issue_url):
-        num_pages = self.get_num_pages(issue_url)
-        links_of_pages = []
+            try:
+                page.wait_for_selector("div#divImage img", timeout=15000)
+            except PlaywrightTimeout:
+                return []
 
-        for page_num in range(1, num_pages + 1):
-            url = f"{issue_url}#{page_num}"
-            links_of_pages.append(url)
+            # Scroll each image into view to trigger lazy-loading, then poll
+            # until every blank.gif has been replaced (or we hit a timeout).
+            page.evaluate("""async () => {
+                const imgs = document.querySelectorAll('div#divImage img');
 
-        return links_of_pages
+                // First pass: scroll every image into view
+                for (const img of imgs) {
+                    img.scrollIntoView({behavior: 'instant'});
+                    await new Promise(r => setTimeout(r, 250));
+                }
 
-    def get_page_image(self, page_url):
-        browser = self._init_playwright()
-        page = browser.new_page()
-        page.goto(page_url, timeout=60000)
+                // Second pass (catches stragglers near the top)
+                for (const img of imgs) {
+                    if (img.src.includes('blank.gif') || !img.src) {
+                        img.scrollIntoView({behavior: 'instant'});
+                        await new Promise(r => setTimeout(r, 300));
+                    }
+                }
 
-        page.wait_for_selector("div#divImage img", state="attached", timeout=15000)
-        images = page.eval_on_selector_all(
-            "div#divImage img",
-            "els => els.map(e => e.src)"
-        )
+                // Poll until all blank.gif are gone (timeout after 15s)
+                const deadline = Date.now() + 15000;
+                while (Date.now() < deadline) {
+                    const blanks = [...imgs].filter(
+                        i => i.style.display !== 'none' && (i.src.includes('blank.gif') || !i.src)
+                    );
+                    if (blanks.length === 0) break;
+                    // Scroll the first remaining blank into view to nudge it
+                    blanks[0].scrollIntoView({behavior: 'instant'});
+                    await new Promise(r => setTimeout(r, 500));
+                }
+            }""")
 
-        # Return only the second image (index 1) if present, otherwise None
-        second = None
-        if isinstance(images, list) and len(images) >= 2:
-            second = images[1]
-        page.close()
-        return second
+            # Collect all real (non-blank, non-hidden) image URLs
+            image_urls = page.evaluate("""() => {
+                const imgs = document.querySelectorAll('div#divImage img');
+                const urls = [];
+                for (const img of imgs) {
+                    const src = img.src || '';
+                    if (img.style.display === 'none') continue;
+                    if (!src || src.includes('blank.gif')) continue;
+                    urls.push(src);
+                }
+                return urls;
+            }""")
+
+            return image_urls if isinstance(image_urls, list) else []
+        finally:
+            page.close()
 
     # ---------- Download ----------
 
-    def download_issue(self, issue, base_dir="downloads"):
-        # Extract comic title from URL
+    def _download_single_page(self, img_url, filepath):
+        """Download a single image to disk. Returns True on success."""
+        if os.path.exists(filepath):
+            return True
+        try:
+            response = self._http.get(img_url)
+            response.raise_for_status()
+            with open(filepath, "wb") as f:
+                f.write(response.content)
+            return True
+        except Exception:
+            return False
+
+    def download_issue(self, issue, output_dir="downloads", on_page_done=None, max_workers=6):
+        """
+        Download all pages of a single issue.
+
+        Images are downloaded concurrently using a thread pool for maximum
+        throughput — the HTTP client and OS I/O are the bottleneck, not CPU,
+        so threads are the right tool here.
+
+        Args:
+            issue: Dict with "title" and "url" keys.
+            output_dir: Base download directory.
+            on_page_done: Optional callback(page_num, total_pages) for progress.
+            max_workers: Number of concurrent download threads.
+
+        Returns the path to the downloaded issue directory.
+        """
         issue_url = issue["url"]
         parsed = urlparse(issue_url)
         path_parts = parsed.path.rstrip("/").split("/")
 
-        # Extract comic title (e.g., "The-Savage-Hulk" from "/Comic/The-Savage-Hulk/Full")
+        # Extract comic title from URL (e.g. "The-Savage-Hulk" from /Comic/The-Savage-Hulk/...)
         comic_title = path_parts[2] if len(path_parts) > 2 else "Unknown"
         comic_title = comic_title.replace("-", " ").replace("_", " ")
         comic_title = " ".join(comic_title.split())
 
-        issue_title = issue["title"].replace("/", "_")
+        issue_title = issue["title"].replace("/", "_").replace("\\", "_")
 
-        # Create structured directory: downloads/COMIC_TITLE/ISSUE_TITLE/
-        issue_dir = os.path.join(base_dir, comic_title, issue_title)
+        issue_dir = os.path.join(output_dir, comic_title, issue_title)
         os.makedirs(issue_dir, exist_ok=True)
 
-        # Get all page links
-        pages_links = self.get_pages_links(issue_url)
+        # Get all image URLs in one shot (single page load + scroll)
+        image_urls = self.get_issue_image_urls(issue_url)
+        total = len(image_urls)
 
-        # Download image for each page
-        for page_num, page_link in enumerate(pages_links, start=1):
-            img_url = self.get_page_image(page_link)
+        if total == 0:
+            return issue_dir
 
+        # Build the work list: (page_number, url, filepath)
+        tasks = []
+        for page_num, img_url in enumerate(image_urls, start=1):
             if not img_url:
                 continue
-
-            ext = os.path.splitext(img_url)[1].split("?")[0]
+            ext = os.path.splitext(urlparse(img_url).path)[1] or ".jpg"
             filename = f"{page_num:03d}{ext}"
-            path = os.path.join(issue_dir, filename)
+            filepath = os.path.join(issue_dir, filename)
+            tasks.append((page_num, img_url, filepath))
 
-            if os.path.exists(path):
-                continue
+        # Download concurrently
+        completed = 0
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            future_to_page = {
+                pool.submit(self._download_single_page, img_url, filepath): page_num
+                for page_num, img_url, filepath in tasks
+            }
+            for future in as_completed(future_to_page):
+                completed += 1
+                if on_page_done:
+                    on_page_done(completed, total)
 
-            r = requests.get(img_url, stream=True, timeout=30)
-            r.raise_for_status()
-            with open(path, "wb") as f:
-                for chunk in r.iter_content(8192):
-                    f.write(chunk)
+        return issue_dir
 
     # ---------- Cleanup ----------
 
     def close(self):
-        if self.browser:
-            self.browser.close()
-        if self.playwright:
-            self.playwright.stop()
-        self.browser = None
-        self.playwright = None
+        """Release all resources (browser, playwright, HTTP client)."""
+        if self._browser:
+            try:
+                self._browser.close()
+            except Exception:
+                pass
+            self._browser = None
+
+        if self._playwright:
+            try:
+                self._playwright.stop()
+            except Exception:
+                pass
+            self._playwright = None
+
+        if self._http:
+            try:
+                self._http.close()
+            except Exception:
+                pass
