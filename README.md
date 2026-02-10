@@ -8,7 +8,7 @@ Features inline cover art previews, concurrent downloads, and an interactive TUI
 
 ```sh
 # Clone the repo
-git clone https://github.com/your-username/readcomics-cli.git
+git clone https://github.com/duartebranco/readcomics-cli.git
 cd readcomics-cli
 
 # Create a virtual environment and install dependencies
