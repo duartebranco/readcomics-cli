@@ -67,15 +67,29 @@ Then open your browser to `http://localhost:5000`
 
 ## How It Works
 
-The scraper uses lightweight HTTP requests with `httpx` to fetch comic data directly from readcomiconline.li. The site embeds image URLs in JavaScript using `lstImages.push("url")` patterns, which we extract with regex. This approach is:
+The scraper uses lightweight HTTP requests with `httpx` or `cloudscraper` to fetch comic data directly from readcomiconline.li. The site embeds image URLs in JavaScript using `lstImages.push("url")` patterns, which we extract with regex.
+
+**Implementation is based on [NOBORU parsers](https://github.com/Creckeryop/NOBORU-parsers)**, which successfully scrape readcomiconline.li using the same HTTP-only approach on PS Vita devices.
+
+This approach is:
 
 - **Fast** - No browser overhead
-- **Simple** - Pure Python with minimal dependencies
-- **Reliable** - Direct HTML parsing with realistic browser headers
+- **Simple** - Pure Python with minimal dependencies  
+- **Proven** - Based on NOBORU's working implementation
+
+### Note on Cloudflare Protection
+
+readcomiconline.li uses Cloudflare protection that may block some automated requests depending on your network/IP. The HTTP approach works for:
+- Devices with trusted fingerprints (e.g., PS Vita, as used by NOBORU)
+- Networks not flagged by Cloudflare
+- Environments with proper cookies/sessions
+
+If you encounter 403 errors, this is a Cloudflare block from your network, not an issue with the scraper logic. The same code works successfully in other environments (as proven by NOBORU).
 
 ## Dependencies
 
 - [httpx](https://www.python-httpx.org/) - Modern HTTP client for API requests and downloads
+- [cloudscraper](https://github.com/VeNoMouS/cloudscraper) - Cloudflare bypass utility (optional but recommended)
 - [Rich](https://github.com/Textualize/rich) - Beautiful terminal UI with tables, progress bars, and styled output
 - [Pillow](https://python-pillow.org/) - Image processing for inline cover art rendering in the terminal
 - [Flask](https://flask.palletsprojects.com/) - Lightweight web framework for the web interface

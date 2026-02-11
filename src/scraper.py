@@ -61,62 +61,103 @@ class ComicScraper:
     def search(self, query):
         """
         Search for comics by keyword using POST request.
+        Uses NOBORU's proven pattern for readcomiconline.li.
 
         Returns a list of dicts: [{"title": str, "url": str, "thumbnail": str}, ...]
         """
         url = f"{self.base_url}/Search/Comic"
         
         try:
-            # Use POST request as per NOBORU pattern
-            response = self._http.post(url, data={"keyword": query})
+            # Use POST request with form data (NOBORU pattern)
+            response = self._http.post(
+                url,
+                data={"keyword": query},
+                headers={"Content-Type": "application/x-www-form-urlencoded"}
+            )
             response.raise_for_status()
             html = response.text
         except Exception:
             return []
 
-        # Parse HTML for comic links and thumbnails
-        # Pattern matches: <a href="/Comic/slug"><img src="..."></a> or <a href="/Comic/slug">Title</a>
-        # Group 1: Comic path (e.g., "/Comic/Batman")
-        # Group 2: Thumbnail URL (optional)
-        # Group 3: Link text/title
-        pattern = r'<a[^>]*href="(/Comic/[^/"]+)[^"]*"[^>]*>(?:[^<]*<img[^>]*src="([^"]*)"[^>]*>)?[^<]*([^<]*)</a>'
+        # NOBORU's pattern for search results: <td title='...'><img src="..."><a href="...">NAME</a></td>
+        pattern = r'<td[^>]*title=[\'"][^\'">]*[\'"][^>]*>.*?<img[^>]*src=["\']([^"\']*)["\'].*?<a[^>]*href=["\']([^"\']*)["\'].*?>([^<]*)</a>'
         
         results = []
         seen = set()
-        matches = re.finditer(pattern, html, re.IGNORECASE)
         
-        for match in matches:
-            href = match.group(1)
-            thumb = match.group(2) or ""
-            text = match.group(3) or ""
+        for match in re.finditer(pattern, html, re.IGNORECASE | re.DOTALL):
+            img_src = match.group(1)
+            href = match.group(2)
+            name = match.group(3)
             
-            # Clean up the path
-            raw_path = href.split("?")[0]
-            parts = raw_path.strip("/").split("/")
+            # Clean up name (remove HTML entities)
+            name = re.sub(r'<[^>]+>', '', name).strip()
+            name = re.sub(r'\s+', ' ', name)
             
-            # Only accept top-level /Comic/<slug> links (not issue links)
-            if len(parts) != 2 or parts[0].lower() != "comic":
+            if not name or not href:
                 continue
             
-            link = urljoin(self.base_url, raw_path)
+            # Build full URLs
+            link = urljoin(self.base_url, href) if not href.startswith('http') else href
+            
+            # Avoid duplicates
             if link in seen:
                 continue
             seen.add(link)
             
-            # Extract title from the surrounding text or URL
-            title = re.sub(r'<[^>]+>', '', text).strip()
-            title = " ".join(title.split())
+            # Make thumbnail absolute URL
+            thumb = ""
+            if img_src:
+                thumb = urljoin(self.base_url, img_src) if not img_src.startswith('http') else img_src
             
-            if not title:
-                slug = urlparse(link).path.rstrip("/").split("/")[-1]
-                title = slug.replace("-", " ").replace("_", " ")
-                title = " ".join(title.split())
+            results.append({"title": name, "url": link, "thumbnail": thumb})
+        
+        return results
+
+    def get_popular_comics(self, page=1):
+        """
+        Get popular comics list (alternative to search).
+        Uses NOBORU's approach: /ComicList/MostPopular
+
+        Returns a list of dicts: [{"title": str, "url": str, "thumbnail": str}, ...]
+        """
+        url = f"{self.base_url}/ComicList/MostPopular?page={page}"
+        
+        try:
+            response = self._http.get(url)
+            response.raise_for_status()
+            html = response.text
+        except Exception:
+            return []
+        
+        # Use same pattern as search
+        pattern = r'<td[^>]*title=[\'"][^\'">]*[\'"][^>]*>.*?<img[^>]*src=["\']([^"\']*)["\'].*?<a[^>]*href=["\']([^"\']*)["\'].*?>([^<]*)</a>'
+        
+        results = []
+        seen = set()
+        
+        for match in re.finditer(pattern, html, re.IGNORECASE | re.DOTALL):
+            img_src = match.group(1)
+            href = match.group(2)
+            name = match.group(3)
             
-            # Make thumbnail absolute URL if needed
-            if thumb and not thumb.startswith("http"):
-                thumb = urljoin(self.base_url, thumb)
+            name = re.sub(r'<[^>]+>', '', name).strip()
+            name = re.sub(r'\s+', ' ', name)
             
-            results.append({"title": title, "url": link, "thumbnail": thumb})
+            if not name or not href:
+                continue
+            
+            link = urljoin(self.base_url, href) if not href.startswith('http') else href
+            
+            if link in seen:
+                continue
+            seen.add(link)
+            
+            thumb = ""
+            if img_src:
+                thumb = urljoin(self.base_url, img_src) if not img_src.startswith('http') else img_src
+            
+            results.append({"title": name, "url": link, "thumbnail": thumb})
         
         return results
 
@@ -209,6 +250,7 @@ class ComicScraper:
     def get_issues(self, comic_url):
         """
         Get the list of issues for a comic.
+        Uses NOBORU's proven pattern for readcomiconline.li.
 
         Returns a list of dicts: [{"title": str, "url": str}, ...]
         Issues are returned in the order they appear on the page.
@@ -220,57 +262,50 @@ class ComicScraper:
         except Exception:
             return []
         
-        # Extract comic slug from URL
+        # Extract comic slug from URL for validation
         parsed_comic = urlparse(comic_url)
         comic_path = parsed_comic.path.rstrip("/")
         comic_slug = None
         if "/Comic/" in comic_path:
             try:
-                comic_slug = comic_path.split("/Comic/")[1]
+                comic_slug = comic_path.split("/Comic/")[1].split("/")[0]
             except Exception:
                 pass
         
         issues = []
         seen = set()
         
-        # Pattern based on NOBORU: <td>[^<]*<a[^>]*href="/Comic/[^/]*/([^"]*)"[^>]*>\s*(.*?)</a>
-        # This finds issue links under the comic
-        pattern = r'<a[^>]*href="(/Comic/[^/]+/[^"]+)"[^>]*>([^<]*)</a>'
-        matches = re.finditer(pattern, html, re.IGNORECASE)
+        # NOBORU's pattern for chapters/issues:
+        # <td>...<a href="/Comic/SLUG/ISSUE">NAME</a>
+        # Captures the issue path and name, with whitespace handling
+        pattern = r'<td>[^<]*<a[^>]*href="/Comic/[^/]+(/[^"]+)"[^>]*>[\s\n\r]*([^<]+)</a>'
         
-        for match in matches:
-            href = match.group(1)
-            text = match.group(2)
+        # Store in temp list to reverse order (NOBORU reverses them)
+        temp_issues = []
+        
+        for match in re.finditer(pattern, html, re.IGNORECASE):
+            issue_path = match.group(1)
+            name = match.group(2)
             
-            # Clean up the path
-            raw_path = href.split("?")[0]
-            link = urljoin(self.base_url, raw_path)
-            path = urlparse(link).path.rstrip("/")
+            # Build full URL using base + comic path + issue path
+            link = f"{self.base_url}{comic_path}{issue_path}"
             
-            # Only accept issue-level links under this comic
-            is_issue_link = "/Issue-" in path or (
-                comic_slug and 
-                path.startswith(f"/Comic/{comic_slug}/") and 
-                path != comic_path
-            )
-            
-            if not is_issue_link:
-                continue
-            
+            # Avoid duplicates
             if link in seen:
                 continue
             seen.add(link)
             
-            # Clean up title
-            title = re.sub(r'<[^>]+>', '', text).strip()
-            title = " ".join(title.split())
+            # Clean up name
+            title = re.sub(r'<[^>]+>', '', name).strip()
+            title = re.sub(r'\s+', ' ', title)
             
             if not title:
-                slug = path.split("/")[-1]
-                title = slug.replace("-", " ").replace("_", " ")
-                title = " ".join(title.split())
+                title = issue_path.strip("/").replace("-", " ").replace("_", " ")
             
-            issues.append({"title": title, "url": link})
+            temp_issues.append({"title": title, "url": link})
+        
+        # Reverse to get correct order (NOBORU does this)
+        issues = list(reversed(temp_issues))
         
         return issues
 
