@@ -1,9 +1,9 @@
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urljoin, quote_plus, urlparse
 
 import httpx
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
 
 class ComicScraper:
@@ -11,10 +11,26 @@ class ComicScraper:
 
     def __init__(self, base_url="https://readcomiconline.li", headless=True):
         self.base_url = base_url
+        # headless parameter kept for API compatibility but not used
         self._headless = headless
-        self._playwright = None
-        self._browser = None
-        self._http = httpx.Client(timeout=30, follow_redirects=True)
+        # Use realistic browser headers to avoid Cloudflare blocks
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Accept-Encoding": "gzip, deflate, br",
+            "DNT": "1",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+        }
+        self._http = httpx.Client(
+            timeout=30,
+            follow_redirects=True,
+            headers=headers
+        )
 
     # ---------- Context manager ----------
 
@@ -24,86 +40,68 @@ class ComicScraper:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
 
-    # ---------- Lazy browser ----------
-
-    @property
-    def browser(self):
-        if self._browser is None:
-            self._playwright = sync_playwright().start()
-            self._browser = self._playwright.chromium.launch(headless=self._headless)
-        return self._browser
-
-    def _new_page(self):
-        """Create a new browser page from the shared browser instance."""
-        return self.browser.new_page()
-
     # ---------- Search ----------
 
     def search(self, query):
         """
-        Search for comics by keyword.
+        Search for comics by keyword using POST request.
 
-        Returns a list of dicts: [{"title": str, "url": str}, ...]
+        Returns a list of dicts: [{"title": str, "url": str, "thumbnail": str}, ...]
         """
-        url = f"{self.base_url}/Search/Comic?keyword={quote_plus(query)}"
-        page = self._new_page()
+        url = f"{self.base_url}/Search/Comic"
+        
         try:
-            page.goto(url, timeout=60000)
-            try:
-                page.wait_for_load_state("networkidle", timeout=7000)
-            except Exception:
-                pass
+            # Use POST request as per NOBORU pattern
+            response = self._http.post(url, data={"keyword": query})
+            response.raise_for_status()
+            html = response.text
+        except Exception:
+            return []
 
-            try:
-                page.wait_for_selector("a[href*='/Comic/']", timeout=10000)
-            except PlaywrightTimeout:
-                return []
-
-            items = page.eval_on_selector_all(
-                "a[href*='/Comic/']",
-                """els => els.map(e => {
-                    const img = e.querySelector('img');
-                    return {
-                        href: (new URL(e.getAttribute('href') || e.href, document.baseURI)).pathname,
-                        text: (e.textContent || '').trim(),
-                        thumb: img ? img.src : ''
-                    };
-                })""",
-            )
-
-            results = []
-            seen = set()
-            for item in items:
-                href = item.get("href", "")
-                if not href:
-                    continue
-
-                raw_path = href.split("?")[0]
-                parts = raw_path.strip("/").split("/")
-                # Only accept top-level /Comic/<slug> links (not issue links)
-                if len(parts) != 2 or parts[0].lower() != "comic":
-                    continue
-
-                link = urljoin(self.base_url, raw_path)
-                if link in seen:
-                    continue
-                seen.add(link)
-
-                title = " ".join(item.get("text", "").split())
-                if not title:
-                    slug = urlparse(link).path.rstrip("/").split("/")[-1]
-                    title = slug.replace("-", " ").replace("_", " ")
-                    title = " ".join(title.split())
-
-                thumb = item.get("thumb", "")
-                if thumb and not thumb.startswith("http"):
-                    thumb = urljoin(self.base_url, thumb)
-
-                results.append({"title": title, "url": link, "thumbnail": thumb})
-
-            return results
-        finally:
-            page.close()
+        # Parse HTML for comic links and thumbnails
+        # Pattern: <td><a href="/Comic/..."><img src="..."></a></td>
+        results = []
+        seen = set()
+        
+        # Find all links to comics with href="/Comic/..."
+        # Using a simple regex pattern to extract comic information
+        pattern = r'<a[^>]*href="(/Comic/[^/"]+)[^"]*"[^>]*>(?:[^<]*<img[^>]*src="([^"]*)"[^>]*>)?[^<]*([^<]*)</a>'
+        matches = re.finditer(pattern, html, re.IGNORECASE)
+        
+        for match in matches:
+            href = match.group(1)
+            thumb = match.group(2) or ""
+            text = match.group(3) or ""
+            
+            # Clean up the path
+            raw_path = href.split("?")[0]
+            parts = raw_path.strip("/").split("/")
+            
+            # Only accept top-level /Comic/<slug> links (not issue links)
+            if len(parts) != 2 or parts[0].lower() != "comic":
+                continue
+            
+            link = urljoin(self.base_url, raw_path)
+            if link in seen:
+                continue
+            seen.add(link)
+            
+            # Extract title from the surrounding text or URL
+            title = re.sub(r'<[^>]+>', '', text).strip()
+            title = " ".join(title.split())
+            
+            if not title:
+                slug = urlparse(link).path.rstrip("/").split("/")[-1]
+                title = slug.replace("-", " ").replace("_", " ")
+                title = " ".join(title.split())
+            
+            # Make thumbnail absolute URL if needed
+            if thumb and not thumb.startswith("http"):
+                thumb = urljoin(self.base_url, thumb)
+            
+            results.append({"title": title, "url": link, "thumbnail": thumb})
+        
+        return results
 
     # ---------- Comic info ----------
 
@@ -111,89 +109,82 @@ class ComicScraper:
         """
         Fetch metadata for a comic: cover image URL, summary, genres, status, etc.
 
-        Returns a dict with keys: cover, summary, genres, status, year.
+        Returns a dict with keys: cover, summary, genres, status, year, publisher.
         All values are strings (empty string if not found).
         """
-        page = self._new_page()
         try:
-            page.goto(comic_url, timeout=60000)
-            try:
-                page.wait_for_load_state("networkidle", timeout=7000)
-            except Exception:
-                pass
-
-            info = page.evaluate("""() => {
-                const result = {cover: '', summary: '', genres: '', status: '', year: '', publisher: ''};
-
-                // Cover image (the /Uploads/ image that isn't tiny)
-                const imgs = document.querySelectorAll('img');
-                for (const img of imgs) {
-                    if (img.src && img.src.includes('/Uploads/') && img.naturalWidth > 50) {
-                        result.cover = img.src;
-                        break;
-                    }
-                }
-
-                // The info section lives inside the first .barContent and uses
-                // <p> blocks with <span class="info"> as labels:
-                //   <p><span class="info">Genres:</span>&nbsp;<a>Action</a>...</p>
-                //   <p><span class="info">Publisher:</span>&nbsp;DC Comics</p>
-                //   <p><span class="info">Status:</span>&nbsp;Completed</p>
-                // Genres are wrapped in <a> tags, other values are plain text.
-                const bc = document.querySelector('.barContent');
-                if (bc) {
-                    const paragraphs = bc.querySelectorAll('p');
-                    for (const p of paragraphs) {
-                        const label = p.querySelector('span.info');
-                        if (!label) continue;
-                        const key = (label.textContent || '').trim().toLowerCase().replace(':', '');
-
-                        if (key === 'genres' || key === 'genre') {
-                            // Genres are in <a> tags after the label
-                            const links = p.querySelectorAll('a');
-                            const genres = [];
-                            for (const a of links) {
-                                const t = (a.textContent || '').trim();
-                                if (t && t !== '.') genres.push(t);
-                            }
-                            result.genres = genres.join(', ');
-                        } else {
-                            // For other fields, grab all text after the label span
-                            let val = p.textContent || '';
-                            val = val.replace(label.textContent || '', '').trim();
-                            // Clean up separating commas from info spans
-                            val = val.replace(/^[:\\s]+/, '').trim();
-
-                            // Status field has trailing junk (views, bookmarks, etc.)
-                            // Only keep text up to the first newline.
-                            val = val.split('\\n')[0].replace(/\\u00a0/g, ' ').trim();
-
-                            if (key === 'status')           result.status = val;
-                            if (key === 'year of release')  result.year = val;
-                            if (key === 'publisher')        result.publisher = val;
-                        }
-                    }
-
-                    // Summary: the <p> that contains substantial text and has no
-                    // span.info label inside it (skip the info rows).
-                    for (const p of paragraphs) {
-                        if (p.querySelector('span.info')) continue;
-                        const text = (p.textContent || '').trim();
-                        if (text.length > 40) {
-                            result.summary = text;
-                            break;
-                        }
-                    }
-                }
-
-                return result;
-            }""")
-
-            return info if isinstance(info, dict) else {
-                "cover": "", "summary": "", "genres": "", "status": "", "year": "", "publisher": ""
+            response = self._http.get(comic_url)
+            response.raise_for_status()
+            html = response.text
+        except Exception:
+            return {
+                "cover": "", "summary": "", "genres": "", 
+                "status": "", "year": "", "publisher": ""
             }
-        finally:
-            page.close()
+        
+        info = {
+            "cover": "", "summary": "", "genres": "", 
+            "status": "", "year": "", "publisher": ""
+        }
+        
+        # Extract cover image (look for /Uploads/ images)
+        cover_match = re.search(r'<img[^>]*src="([^"]*\/Uploads\/[^"]*)"[^>]*>', html, re.IGNORECASE)
+        if cover_match:
+            cover_url = cover_match.group(1)
+            if not cover_url.startswith("http"):
+                cover_url = urljoin(self.base_url, cover_url)
+            info["cover"] = cover_url
+        
+        # Extract info from the barContent section
+        # Look for <p><span class="info">Label:</span>&nbsp;Value</p> patterns
+        
+        # Genres: <span class="info">Genres:</span>&nbsp;<a>Genre1</a>, <a>Genre2</a>
+        genres_match = re.search(
+            r'<span class="info">Genres?:</span>&nbsp;(.*?)</p>',
+            html, re.IGNORECASE | re.DOTALL
+        )
+        if genres_match:
+            genres_html = genres_match.group(1)
+            # Extract all <a> tag contents
+            genre_links = re.findall(r'<a[^>]*>([^<]+)</a>', genres_html)
+            info["genres"] = ", ".join(g.strip() for g in genre_links if g.strip() and g.strip() != ".")
+        
+        # Status: <span class="info">Status:</span>&nbsp;Completed
+        status_match = re.search(
+            r'<span class="info">Status:</span>&nbsp;([^<\n]+)',
+            html, re.IGNORECASE
+        )
+        if status_match:
+            info["status"] = status_match.group(1).strip()
+        
+        # Year: <span class="info">Year of Release:</span>&nbsp;2020
+        year_match = re.search(
+            r'<span class="info">Year of Release:</span>&nbsp;([^<\n]+)',
+            html, re.IGNORECASE
+        )
+        if year_match:
+            info["year"] = year_match.group(1).strip()
+        
+        # Publisher: <span class="info">Publisher:</span>&nbsp;DC Comics
+        publisher_match = re.search(
+            r'<span class="info">Publisher:</span>&nbsp;([^<\n]+)',
+            html, re.IGNORECASE
+        )
+        if publisher_match:
+            info["publisher"] = publisher_match.group(1).strip()
+        
+        # Summary: Look for <p> tags with substantial text but no span.info inside
+        # Usually appears after the info spans
+        summary_pattern = r'<p>(?!<span class="info">)([^<]{40,}?)</p>'
+        summary_match = re.search(summary_pattern, html, re.IGNORECASE)
+        if summary_match:
+            summary = summary_match.group(1).strip()
+            # Clean up HTML entities
+            summary = re.sub(r'&nbsp;', ' ', summary)
+            summary = re.sub(r'\s+', ' ', summary)
+            info["summary"] = summary
+        
+        return info
 
     # ---------- Issues ----------
 
@@ -204,140 +195,101 @@ class ComicScraper:
         Returns a list of dicts: [{"title": str, "url": str}, ...]
         Issues are returned in the order they appear on the page.
         """
-        page = self._new_page()
         try:
-            page.goto(comic_url, timeout=60000)
+            response = self._http.get(comic_url)
+            response.raise_for_status()
+            html = response.text
+        except Exception:
+            return []
+        
+        # Extract comic slug from URL
+        parsed_comic = urlparse(comic_url)
+        comic_path = parsed_comic.path.rstrip("/")
+        comic_slug = None
+        if "/Comic/" in comic_path:
             try:
-                page.wait_for_load_state("networkidle", timeout=7000)
+                comic_slug = comic_path.split("/Comic/")[1]
             except Exception:
                 pass
-            page.wait_for_selector("a[href]", timeout=10000)
-
-            items = page.eval_on_selector_all(
-                "a[href]",
-                """els => els.map(e => ({
-                    href: (new URL(e.getAttribute('href') || e.href, document.baseURI)).pathname,
-                    text: (e.textContent || '').trim()
-                }))""",
+        
+        issues = []
+        seen = set()
+        
+        # Pattern based on NOBORU: <td>[^<]*<a[^>]*href="/Comic/[^/]*/([^"]*)"[^>]*>\s*(.*?)</a>
+        # This finds issue links under the comic
+        pattern = r'<a[^>]*href="(/Comic/[^/]+/[^"]+)"[^>]*>([^<]*)</a>'
+        matches = re.finditer(pattern, html, re.IGNORECASE)
+        
+        for match in matches:
+            href = match.group(1)
+            text = match.group(2)
+            
+            # Clean up the path
+            raw_path = href.split("?")[0]
+            link = urljoin(self.base_url, raw_path)
+            path = urlparse(link).path.rstrip("/")
+            
+            # Only accept issue-level links under this comic
+            is_issue_link = "/Issue-" in path or (
+                comic_slug and 
+                path.startswith(f"/Comic/{comic_slug}/") and 
+                path != comic_path
             )
+            
+            if not is_issue_link:
+                continue
+            
+            if link in seen:
+                continue
+            seen.add(link)
+            
+            # Clean up title
+            title = re.sub(r'<[^>]+>', '', text).strip()
+            title = " ".join(title.split())
+            
+            if not title:
+                slug = path.split("/")[-1]
+                title = slug.replace("-", " ").replace("_", " ")
+                title = " ".join(title.split())
+            
+            issues.append({"title": title, "url": link})
+        
+        return issues
 
-            parsed_comic = urlparse(comic_url)
-            comic_path = parsed_comic.path.rstrip("/")
-            comic_slug = None
-            if "/Comic/" in comic_path:
-                try:
-                    comic_slug = comic_path.split("/Comic/")[1]
-                except Exception:
-                    pass
-
-            issues = []
-            seen = set()
-            for item in items:
-                href = item.get("href", "")
-                if not href:
-                    continue
-
-                raw_path = href.split("?")[0]
-                link = urljoin(self.base_url, raw_path)
-                path = urlparse(link).path.rstrip("/")
-
-                # Only accept issue-level links under this comic
-                is_issue_link = "/Issue-" in path
-                is_under_comic = comic_slug and path.startswith(f"/Comic/{comic_slug}/") and path != comic_path
-                if not (is_issue_link or is_under_comic):
-                    continue
-
-                if link in seen:
-                    continue
-                seen.add(link)
-
-                title = " ".join(item.get("text", "").split())
-                if not title:
-                    slug = path.split("/")[-1]
-                    title = slug.replace("-", " ").replace("_", " ")
-                    title = " ".join(title.split())
-
-                issues.append({"title": title, "url": link})
-
-            return issues
-        finally:
-            page.close()
-
-    # ---------- Page images (readType=1 all-pages approach) ----------
+    # ---------- Page images (lstImages.push pattern) ----------
 
     def get_issue_image_urls(self, issue_url):
         """
-        Navigate to the issue in all-pages mode (readType=1), scroll through
-        every image to trigger lazy-loading, then collect all real image URLs
-        in a single pass.
+        Fetch the issue page HTML and extract image URLs from JavaScript.
+        The site embeds images using lstImages.push("url") in the HTML.
 
         Returns a list of image URL strings, one per comic page.
         """
         # Append readType=1 to load all pages on a single page
         separator = "&" if "?" in issue_url else "?"
         all_pages_url = f"{issue_url}{separator}readType=1"
-
-        page = self._new_page()
+        
         try:
-            page.goto(all_pages_url, timeout=60000)
-            try:
-                page.wait_for_load_state("networkidle", timeout=15000)
-            except Exception:
-                pass
-
-            try:
-                page.wait_for_selector("div#divImage img", timeout=15000)
-            except PlaywrightTimeout:
-                return []
-
-            # Scroll each image into view to trigger lazy-loading, then poll
-            # until every blank.gif has been replaced (or we hit a timeout).
-            page.evaluate("""async () => {
-                const imgs = document.querySelectorAll('div#divImage img');
-
-                // First pass: scroll every image into view
-                for (const img of imgs) {
-                    img.scrollIntoView({behavior: 'instant'});
-                    await new Promise(r => setTimeout(r, 250));
-                }
-
-                // Second pass (catches stragglers near the top)
-                for (const img of imgs) {
-                    if (img.src.includes('blank.gif') || !img.src) {
-                        img.scrollIntoView({behavior: 'instant'});
-                        await new Promise(r => setTimeout(r, 300));
-                    }
-                }
-
-                // Poll until all blank.gif are gone (timeout after 15s)
-                const deadline = Date.now() + 15000;
-                while (Date.now() < deadline) {
-                    const blanks = [...imgs].filter(
-                        i => i.style.display !== 'none' && (i.src.includes('blank.gif') || !i.src)
-                    );
-                    if (blanks.length === 0) break;
-                    // Scroll the first remaining blank into view to nudge it
-                    blanks[0].scrollIntoView({behavior: 'instant'});
-                    await new Promise(r => setTimeout(r, 500));
-                }
-            }""")
-
-            # Collect all real (non-blank, non-hidden) image URLs
-            image_urls = page.evaluate("""() => {
-                const imgs = document.querySelectorAll('div#divImage img');
-                const urls = [];
-                for (const img of imgs) {
-                    const src = img.src || '';
-                    if (img.style.display === 'none') continue;
-                    if (!src || src.includes('blank.gif')) continue;
-                    urls.push(src);
-                }
-                return urls;
-            }""")
-
-            return image_urls if isinstance(image_urls, list) else []
-        finally:
-            page.close()
+            response = self._http.get(all_pages_url)
+            response.raise_for_status()
+            html = response.text
+        except Exception:
+            return []
+        
+        # Extract image URLs from lstImages.push("url") JavaScript calls
+        # Pattern from NOBORU: lstImages\.push\("([^"]*)"\)
+        image_urls = []
+        pattern = r'lstImages\.push\("([^"]*)"\)'
+        matches = re.finditer(pattern, html)
+        
+        for match in matches:
+            img_url = match.group(1)
+            # Clean up escaped slashes
+            img_url = img_url.replace(r'\/', '/')
+            if img_url:
+                image_urls.append(img_url)
+        
+        return image_urls
 
     # ---------- Download ----------
 
@@ -346,7 +298,9 @@ class ComicScraper:
         if os.path.exists(filepath):
             return True
         try:
-            response = self._http.get(img_url)
+            # Add Referer header to avoid 403 errors
+            headers = {"Referer": self.base_url + "/"}
+            response = self._http.get(img_url, headers=headers)
             response.raise_for_status()
             with open(filepath, "wb") as f:
                 f.write(response.content)
@@ -418,21 +372,7 @@ class ComicScraper:
     # ---------- Cleanup ----------
 
     def close(self):
-        """Release all resources (browser, playwright, HTTP client)."""
-        if self._browser:
-            try:
-                self._browser.close()
-            except Exception:
-                pass
-            self._browser = None
-
-        if self._playwright:
-            try:
-                self._playwright.stop()
-            except Exception:
-                pass
-            self._playwright = None
-
+        """Release all resources (HTTP client)."""
         if self._http:
             try:
                 self._http.close()

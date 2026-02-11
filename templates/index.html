@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ReadComics CLI - Web Interface</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .comic-card {
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .comic-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.2);
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen">
+    <div class="container mx-auto px-4 py-8">
+        <!-- Header -->
+        <header class="text-center mb-12">
+            <h1 class="text-5xl font-bold text-cyan-400 mb-2">📚 ReadComics CLI</h1>
+            <p class="text-gray-400">Search, browse, and download comics from readcomiconline.li</p>
+        </header>
+
+        <!-- Search Bar -->
+        <div class="max-w-2xl mx-auto mb-12">
+            <form id="searchForm" class="flex gap-2">
+                <input 
+                    type="text" 
+                    id="searchInput" 
+                    placeholder="Search for a comic (e.g., Batman, Spider-Man)..."
+                    class="flex-1 px-4 py-3 rounded-lg bg-gray-800 border border-gray-700 focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
+                    required
+                >
+                <button 
+                    type="submit"
+                    class="px-6 py-3 bg-cyan-600 hover:bg-cyan-700 rounded-lg font-semibold transition-colors"
+                >
+                    Search
+                </button>
+            </form>
+        </div>
+
+        <!-- Loading Spinner -->
+        <div id="loading" class="hidden text-center py-12">
+            <div class="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-cyan-500"></div>
+            <p class="mt-4 text-gray-400">Searching...</p>
+        </div>
+
+        <!-- Error Message -->
+        <div id="error" class="hidden max-w-2xl mx-auto mb-8 p-4 bg-red-900/50 border border-red-700 rounded-lg">
+            <p class="text-red-300"></p>
+        </div>
+
+        <!-- Results Grid -->
+        <div id="results" class="hidden">
+            <h2 class="text-2xl font-bold mb-6 text-center">Search Results</h2>
+            <div id="resultsGrid" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6">
+                <!-- Comic cards will be inserted here -->
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const searchForm = document.getElementById('searchForm');
+        const searchInput = document.getElementById('searchInput');
+        const loading = document.getElementById('loading');
+        const error = document.getElementById('error');
+        const results = document.getElementById('results');
+        const resultsGrid = document.getElementById('resultsGrid');
+
+        searchForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const query = searchInput.value.trim();
+            if (!query) return;
+
+            // Show loading, hide others
+            loading.classList.remove('hidden');
+            error.classList.add('hidden');
+            results.classList.add('hidden');
+            resultsGrid.innerHTML = '';
+
+            try {
+                const response = await fetch('/search', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ query }),
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Search failed');
+                }
+
+                // Hide loading
+                loading.classList.add('hidden');
+
+                if (data.results.length === 0) {
+                    error.querySelector('p').textContent = 'No comics found. Try a different search term.';
+                    error.classList.remove('hidden');
+                    return;
+                }
+
+                // Display results
+                displayResults(data.results);
+
+            } catch (err) {
+                loading.classList.add('hidden');
+                error.querySelector('p').textContent = err.message;
+                error.classList.remove('hidden');
+            }
+        });
+
+        function displayResults(comics) {
+            resultsGrid.innerHTML = '';
+            
+            comics.forEach(comic => {
+                const comicSlug = comic.url.split('/Comic/')[1];
+                
+                const card = document.createElement('a');
+                card.href = `/comic/${comicSlug}`;
+                card.className = 'comic-card block bg-gray-800 rounded-lg overflow-hidden border border-gray-700';
+                
+                card.innerHTML = `
+                    ${comic.thumbnail ? `
+                        <img 
+                            src="${comic.thumbnail}" 
+                            alt="${comic.title}"
+                            class="w-full h-64 object-cover"
+                            onerror="this.style.display='none'"
+                        >
+                    ` : `
+                        <div class="w-full h-64 bg-gray-700 flex items-center justify-center">
+                            <svg class="w-16 h-16 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"></path>
+                            </svg>
+                        </div>
+                    `}
+                    <div class="p-4">
+                        <h3 class="font-semibold text-white line-clamp-2">${comic.title}</h3>
+                    </div>
+                `;
+                
+                resultsGrid.appendChild(card);
+            });
+
+            results.classList.remove('hidden');
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ info.get('title', comic_slug.replace('-', ' ')) }} - ReadComics CLI</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen">
+    <div class="container mx-auto px-4 py-8">
+        <!-- Back Button -->
+        <a href="/" class="inline-flex items-center text-cyan-400 hover:text-cyan-300 mb-6">
+            <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path>
+            </svg>
+            Back to Search
+        </a>
+
+        <!-- Comic Info -->
+        <div class="bg-gray-800 rounded-lg border border-gray-700 p-6 mb-8">
+            <div class="flex flex-col md:flex-row gap-6">
+                <!-- Cover Image -->
+                {% if info.cover %}
+                <div class="flex-shrink-0">
+                    <img 
+                        src="{{ info.cover }}" 
+                        alt="Cover"
+                        class="w-full md:w-64 rounded-lg shadow-lg"
+                        onerror="this.style.display='none'"
+                    >
+                </div>
+                {% endif %}
+
+                <!-- Info -->
+                <div class="flex-1">
+                    <h1 class="text-3xl font-bold text-cyan-400 mb-4">
+                        {{ comic_slug.replace('-', ' ').title() }}
+                    </h1>
+
+                    {% if info.publisher %}
+                    <p class="mb-2">
+                        <span class="font-semibold text-gray-400">Publisher:</span>
+                        <span class="text-white">{{ info.publisher }}</span>
+                    </p>
+                    {% endif %}
+
+                    {% if info.genres %}
+                    <p class="mb-2">
+                        <span class="font-semibold text-gray-400">Genres:</span>
+                        <span class="text-white">{{ info.genres }}</span>
+                    </p>
+                    {% endif %}
+
+                    {% if info.status %}
+                    <p class="mb-2">
+                        <span class="font-semibold text-gray-400">Status:</span>
+                        <span class="text-white">{{ info.status }}</span>
+                    </p>
+                    {% endif %}
+
+                    {% if info.year %}
+                    <p class="mb-2">
+                        <span class="font-semibold text-gray-400">Year:</span>
+                        <span class="text-white">{{ info.year }}</span>
+                    </p>
+                    {% endif %}
+
+                    {% if info.summary %}
+                    <div class="mt-4">
+                        <p class="text-gray-300">{{ info.summary }}</p>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <!-- Issues List -->
+        <div class="bg-gray-800 rounded-lg border border-gray-700 p-6">
+            <div class="flex justify-between items-center mb-6">
+                <h2 class="text-2xl font-bold">Issues ({{ issues|length }})</h2>
+                <button 
+                    id="downloadAllBtn"
+                    class="px-4 py-2 bg-cyan-600 hover:bg-cyan-700 rounded-lg font-semibold transition-colors"
+                >
+                    Download All
+                </button>
+            </div>
+
+            {% if issues %}
+            <div class="space-y-2">
+                {% for issue in issues %}
+                <div class="flex items-center justify-between bg-gray-700/50 p-4 rounded-lg hover:bg-gray-700 transition-colors">
+                    <div class="flex-1">
+                        <h3 class="text-white font-medium">{{ issue.title }}</h3>
+                    </div>
+                    <button 
+                        class="download-btn px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg font-semibold transition-colors text-sm"
+                        data-url="{{ issue.url }}"
+                        data-title="{{ issue.title }}"
+                    >
+                        Download
+                    </button>
+                </div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <p class="text-gray-400 text-center py-8">No issues found for this comic.</p>
+            {% endif %}
+        </div>
+
+        <!-- Download Status -->
+        <div id="downloadStatus" class="hidden fixed bottom-4 right-4 bg-gray-800 border border-gray-700 rounded-lg p-4 shadow-xl max-w-md">
+            <h3 class="font-semibold mb-2">Download Progress</h3>
+            <div id="statusList" class="space-y-2 text-sm"></div>
+        </div>
+    </div>
+
+    <script>
+        const downloadButtons = document.querySelectorAll('.download-btn');
+        const downloadAllBtn = document.getElementById('downloadAllBtn');
+        const downloadStatus = document.getElementById('downloadStatus');
+        const statusList = document.getElementById('statusList');
+
+        downloadButtons.forEach(btn => {
+            btn.addEventListener('click', async (e) => {
+                const url = e.target.dataset.url;
+                const title = e.target.dataset.title;
+                await downloadIssue(url, title, e.target);
+            });
+        });
+
+        downloadAllBtn.addEventListener('click', async () => {
+            downloadStatus.classList.remove('hidden');
+            statusList.innerHTML = '';
+
+            for (const btn of downloadButtons) {
+                await downloadIssue(btn.dataset.url, btn.dataset.title, btn);
+            }
+        });
+
+        async function downloadIssue(url, title, button) {
+            const originalText = button.textContent;
+            button.textContent = 'Downloading...';
+            button.disabled = true;
+
+            // Add status entry
+            const statusEntry = document.createElement('div');
+            statusEntry.className = 'p-2 bg-gray-700 rounded';
+            statusEntry.innerHTML = `<span class="text-yellow-400">⏳</span> ${title}`;
+            statusList.appendChild(statusEntry);
+            downloadStatus.classList.remove('hidden');
+
+            try {
+                // First, get the image URLs
+                const imagesResponse = await fetch('/api/issue/images', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url }),
+                });
+
+                const imagesData = await imagesResponse.json();
+
+                if (!imagesResponse.ok) {
+                    throw new Error(imagesData.error || 'Failed to get images');
+                }
+
+                // Then download the issue
+                const downloadResponse = await fetch('/api/download', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        issue: { url, title },
+                        output_dir: 'downloads'
+                    }),
+                });
+
+                const downloadData = await downloadResponse.json();
+
+                if (!downloadResponse.ok) {
+                    throw new Error(downloadData.error || 'Download failed');
+                }
+
+                statusEntry.innerHTML = `<span class="text-green-400">✓</span> ${title} - Saved to ${downloadData.path}`;
+                button.textContent = 'Downloaded';
+                button.classList.remove('bg-green-600', 'hover:bg-green-700');
+                button.classList.add('bg-gray-600');
+
+            } catch (err) {
+                statusEntry.innerHTML = `<span class="text-red-400">✗</span> ${title} - ${err.message}`;
+                button.textContent = originalText;
+                button.disabled = false;
+            }
+        }
+    </script>
+</body>
+</html>

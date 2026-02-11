@@ -1,8 +1,17 @@
 # readcomics-cli
 
-Search, browse, and download comics from [readcomiconline.li](https://readcomiconline.li) straight from your terminal.
+Search, browse, and download comics from [readcomiconline.li](https://readcomiconline.li) straight from your terminal or browser.
 
-Features inline cover art previews, concurrent downloads, and an interactive TUI powered by [Rich](https://github.com/Textualize/rich).
+Features inline cover art previews, concurrent downloads, and both a CLI and web interface powered by [Rich](https://github.com/Textualize/rich) and [Flask](https://flask.palletsprojects.com/).
+
+## Features
+
+- 🔍 **Search** - Find comics by name
+- 📚 **Browse** - View comic metadata, cover art, genres, and summaries
+- 📥 **Download** - Concurrent downloads for maximum speed
+- 💻 **CLI** - Interactive terminal interface with Rich TUI
+- 🌐 **Web App** - Modern web interface for easy browsing
+- 🚀 **Lightweight** - Pure HTTP scraping, no browser automation needed
 
 ## Install
 
@@ -15,38 +24,61 @@ cd readcomics-cli
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-
-# Install the Playwright browser (one-time setup)
-playwright install chromium
 ```
 
 ## Usage
+
+### CLI Mode
 
 ```sh
 python main.py
 ```
 
-This launches an interactive session:
+This launches an interactive terminal session:
 
 1. **Search** - type a comic name
 2. **Pick a comic** - see a cover art preview, genres, and summary
 3. **Pick issues** - select one, a range, or all
 4. **Download** - pages are fetched and downloaded concurrently (defaults to `/downloads`)
 
-### CLI Flags
+#### CLI Flags
 
 | Flag | Description |
 |---|---|
 | `-s`, `--search QUERY` | Skip the search prompt and jump straight to results |
 | `-o`, `--output-dir PATH` | Set the download directory (default: `./downloads`) |
-| `--no-headless` | Show the browser window (useful for debugging) |
+| `--no-headless` | (Deprecated, kept for compatibility) |
+
+### Web Interface
+
+```sh
+python web.py
+```
+
+Then open your browser to `http://localhost:5000`
+
+#### Web App Options
+
+| Flag | Description |
+|---|---|
+| `-p`, `--port PORT` | Port to run the server on (default: 5000) |
+| `--host HOST` | Host to bind to (default: 127.0.0.1) |
+| `--debug` | Run in debug mode |
+
+## How It Works
+
+The scraper uses lightweight HTTP requests with `httpx` to fetch comic data directly from readcomiconline.li. The site embeds image URLs in JavaScript using `lstImages.push("url")` patterns, which we extract with regex. This approach is:
+
+- **Fast** - No browser overhead
+- **Simple** - Pure Python with minimal dependencies
+- **Reliable** - Direct HTML parsing with realistic browser headers
 
 ## Dependencies
 
-- [Playwright](https://playwright.dev/python/) - headless browser for scraping pages behind Cloudflare
-- [httpx](https://www.python-httpx.org/) - HTTP client for concurrent image downloads
-- [Rich](https://github.com/Textualize/rich) - tables, progress bars, styled output
-- [Pillow](https://python-pillow.org/) - inline cover art rendering in the terminal
+- [httpx](https://www.python-httpx.org/) - Modern HTTP client for API requests and downloads
+- [Rich](https://github.com/Textualize/rich) - Beautiful terminal UI with tables, progress bars, and styled output
+- [Pillow](https://python-pillow.org/) - Image processing for inline cover art rendering in the terminal
+- [Flask](https://flask.palletsprojects.com/) - Lightweight web framework for the web interface
 
 ## Demo
 
