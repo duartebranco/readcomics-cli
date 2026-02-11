@@ -64,6 +64,9 @@ class ComicScraper:
         # Group 2: Thumbnail URL (optional)
         # Group 3: Link text/title
         pattern = r'<a[^>]*href="(/Comic/[^/"]+)[^"]*"[^>]*>(?:[^<]*<img[^>]*src="([^"]*)"[^>]*>)?[^<]*([^<]*)</a>'
+        
+        results = []
+        seen = set()
         matches = re.finditer(pattern, html, re.IGNORECASE)
         
         for match in matches:
