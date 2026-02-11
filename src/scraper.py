@@ -59,12 +59,10 @@ class ComicScraper:
             return []
 
         # Parse HTML for comic links and thumbnails
-        # Pattern: <td><a href="/Comic/..."><img src="..."></a></td>
-        results = []
-        seen = set()
-        
-        # Find all links to comics with href="/Comic/..."
-        # Using a simple regex pattern to extract comic information
+        # Pattern matches: <a href="/Comic/slug"><img src="..."></a> or <a href="/Comic/slug">Title</a>
+        # Group 1: Comic path (e.g., "/Comic/Batman")
+        # Group 2: Thumbnail URL (optional)
+        # Group 3: Link text/title
         pattern = r'<a[^>]*href="(/Comic/[^/"]+)[^"]*"[^>]*>(?:[^<]*<img[^>]*src="([^"]*)"[^>]*>)?[^<]*([^<]*)</a>'
         matches = re.finditer(pattern, html, re.IGNORECASE)
         
@@ -147,6 +145,7 @@ class ComicScraper:
             genres_html = genres_match.group(1)
             # Extract all <a> tag contents
             genre_links = re.findall(r'<a[^>]*>([^<]+)</a>', genres_html)
+            # Filter out periods (used as separators in the HTML)
             info["genres"] = ", ".join(g.strip() for g in genre_links if g.strip() and g.strip() != ".")
         
         # Status: <span class="info">Status:</span>&nbsp;Completed
@@ -284,8 +283,8 @@ class ComicScraper:
         
         for match in matches:
             img_url = match.group(1)
-            # Clean up escaped slashes
-            img_url = img_url.replace(r'\/', '/')
+            # Clean up escaped slashes (JavaScript uses \/ in strings)
+            img_url = img_url.replace('\\/', '/')
             if img_url:
                 image_urls.append(img_url)
         

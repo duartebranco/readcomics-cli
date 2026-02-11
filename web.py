@@ -14,7 +14,15 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 from scraper import ComicScraper
 
 app = Flask(__name__)
-app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-key-change-in-production')
+# Use environment variable or generate random key for development
+secret_key = os.environ.get('SECRET_KEY')
+if not secret_key:
+    if os.environ.get('FLASK_ENV') == 'production':
+        raise RuntimeError("SECRET_KEY environment variable must be set in production")
+    # Generate random key for development
+    import secrets
+    secret_key = secrets.token_hex(32)
+app.secret_key = secret_key
 
 # Global scraper instance
 scraper = ComicScraper()
@@ -111,7 +119,9 @@ def download_issue():
 @app.teardown_appcontext
 def cleanup(exception=None):
     """Clean up resources on app shutdown."""
-    pass  # scraper persists across requests
+    # Note: scraper persists across requests for connection pooling
+    # It will be closed when the app process terminates
+    pass
 
 if __name__ == '__main__':
     import argparse

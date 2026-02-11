@@ -47,7 +47,7 @@ This launches an interactive terminal session:
 |---|---|
 | `-s`, `--search QUERY` | Skip the search prompt and jump straight to results |
 | `-o`, `--output-dir PATH` | Set the download directory (default: `./downloads`) |
-| `--no-headless` | (Deprecated, kept for compatibility) |
+| `--no-headless` | (No longer used; kept for backward compatibility) |
 
 ### Web Interface
 
