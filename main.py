@@ -15,7 +15,7 @@ from rich.text import Text
 from rich.columns import Columns
 from rich import box
 
-from src.scraper import ComicScraper
+from src.providers import get_provider, list_providers, DEFAULT_PROVIDER
 from src.terminal_image import render_image_from_url
 
 console = Console()
@@ -370,6 +370,14 @@ def main():
         help="directory to save downloaded comics (default: ./downloads)",
     )
     parser.add_argument(
+        "-p", "--provider",
+        type=str,
+        default=None,
+        choices=list_providers(),
+        metavar="NAME",
+        help=f"comic provider to use (default: {DEFAULT_PROVIDER}, available: {', '.join(list_providers())})",
+    )
+    parser.add_argument(
         "--no-headless",
         action="store_true",
         help="show the browser window (useful for debugging)",
@@ -383,7 +391,10 @@ def main():
 
     console.print(BANNER)
 
-    scraper = ComicScraper(headless=not args.no_headless)
+    provider_name = args.provider or DEFAULT_PROVIDER
+    console.print(f"  [dim]Using provider: [bold]{provider_name}[/bold][/dim]\n")
+
+    scraper = get_provider(name=provider_name, headless=not args.no_headless)
     _scraper_instance = scraper
 
     try:
