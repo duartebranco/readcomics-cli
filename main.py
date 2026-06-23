@@ -262,9 +262,14 @@ def display_issues(issues):
 
 
 def download_issues(scraper, issues, output_dir):
-    """Download a list of issues with a rich progress bar."""
+    """Download a list of issues with a rich progress bar.
+
+    Returns a list of (issue, reason) tuples for any failures.
+    """
     total_issues = len(issues)
     console.print(f"\n  [bold]⬇ Downloading {total_issues} issue(s) to [cyan]{output_dir}/[/cyan][/bold]\n")
+
+    failed = []
 
     for issue_idx, issue in enumerate(issues, 1):
         issue_label = f"[{issue_idx}/{total_issues}] {issue['title']}"
@@ -278,10 +283,12 @@ def download_issues(scraper, issues, output_dir):
                 raise
             except Exception as e:
                 console.print(f"  {issue_label}: [red]FAILED fetching pages ({e})[/red]")
+                failed.append((issue, f"fetching pages: {e}"))
                 continue
 
         if not image_urls:
             console.print(f"  {issue_label}: [yellow]no pages found[/yellow]")
+            failed.append((issue, "no pages found"))
             continue
 
         # Phase 2: Download images (progress bar)
@@ -295,8 +302,9 @@ def download_issues(scraper, issues, output_dir):
             raise
         except Exception as e:
             console.print(f"  {issue_label}: [red]FAILED ({e})[/red]")
+            failed.append((issue, str(e)))
 
-    console.print(f"\n  [bold green]✅ Finished downloading to [cyan]{output_dir}/[/cyan][/bold green]")
+    return failed
 
 
 def _download_with_progress(scraper, issue, image_urls, output_dir, issue_label):
@@ -431,7 +439,28 @@ def main():
                 continue
 
             # --- Download ---
-            download_issues(scraper, selected, args.output_dir)
+            failed = download_issues(scraper, selected, args.output_dir)
+
+            if failed:
+                console.print(f"\n  [bold yellow]⚠ {len(failed)} issue(s) failed:[/bold yellow]")
+                for issue, reason in failed:
+                    console.print(f"    [red]•[/red] {issue['title']} [dim]({reason})[/dim]")
+
+                try:
+                    retry = console.input(
+                        "\n  [bold green]Retry failed issues?[/bold green] [dim](y/n)[/dim]: "
+                    ).strip().lower()
+                except EOFError:
+                    retry = "n"
+                if retry in ("y", "yes"):
+                    retry_issues = [i for i, _ in failed]
+                    failed = download_issues(scraper, retry_issues, args.output_dir)
+                    if failed:
+                        console.print(f"\n  [bold yellow]⚠ {len(failed)} issue(s) still failed:[/bold yellow]")
+                        for issue, reason in failed:
+                            console.print(f"    [red]•[/red] {issue['title']} [dim]({reason})[/dim]")
+                    else:
+                        console.print("\n  [bold green]All retries succeeded![/bold green]")
 
             # After downloading, offer to open the folder
             try:
